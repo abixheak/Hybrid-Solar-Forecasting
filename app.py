@@ -144,5 +144,117 @@ if weather_df is not None:
                 hourly_demand = base_load * (night_dip + morning_peak + evening_peak + np.random.uniform(-0.02, 0.02))
                 demand.append(max(20, hourly_demand))
 
-            # 2. Sequential BESS Time-Series Simulation Loop
-            current_charge = battery_capacity * (initial_charge_pct
+           # 2. Sequential BESS Time-Series Simulation Loop
+            current_charge = battery_capacity * (initial_charge_pct / 100.0)
+            battery_soc_history = []
+            unmet_deficit_history = []
+            
+            for gen, dem in zip(generation, demand):
+                raw_delta = gen - dem
+                
+                if raw_delta > 0:
+                    available_room = battery_capacity - current_charge
+                    energy_to_store = min(raw_delta, available_room)
+                    current_charge += energy_to_store
+                    unmet_deficit = 0
+                else:
+                    needed_energy = abs(raw_delta)
+                    energy_dispatched = min(needed_energy, current_charge)
+                    current_charge -= energy_dispatched
+                    unmet_deficit = needed_energy - energy_dispatched
+                    
+                battery_soc_history.append(current_charge)
+                unmet_deficit_history.append(unmet_deficit)
+
+            # Performance Analytics Aggregations
+            total_gen = np.trapezoid(generation, dx=1.0)
+            total_dem = np.trapezoid(demand, dx=1.0)
+            total_grid_dependency = sum(unmet_deficit_history)
+            green_mitigation_pct = 100 * (1.0 - (total_grid_dependency / total_dem)) if total_dem > 0 else 100
+            grid_status_text = "🟢 Net Surplus" if total_gen > total_grid_dependency else "🔴 Net Base-Load Dependent"
+
+            # Save everything cleanly in st.session_state
+            st.session_state.simulation_results = {
+                "total_gen": total_gen,
+                "total_dem": total_dem,
+                "total_grid_dependency": total_grid_dependency,
+                "green_mitigation_pct": green_mitigation_pct,
+                "grid_status_text": grid_status_text,
+                "data_frame_records": {
+                    "Time": weather_df["timestamp"].dt.strftime('%H:%M'),
+                    "Generation": generation,
+                    "Demand": demand,
+                    "Battery Storage (kWh)": battery_soc_history,
+                    "True Deficit (Fossil-Fuel Backup)": unmet_deficit_history
+                }
+            }
+            st.toast("Storage simulation completed!", icon="🔋")
+
+# -----------------------------------------------------------------------------
+# RENDERING LAYER (Runs on every rerun, checking if session results exist)
+# -----------------------------------------------------------------------------
+if st.session_state.simulation_results is not None:
+    res = st.session_state.simulation_results
+    results_df = pd.DataFrame(res["data_frame_records"])
+    
+    # 1. KPI Data Banner
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("☀️ Total Generation", f"{res['total_gen']:.1f} kWh")
+    col2.metric("🔌 Total Demand Profile", f"{res['total_dem']:.1f} kWh")
+    col3.metric("🚨 Remaining Grid Dependency", f"{res['total_grid_dependency']:.1f} kWh")
+    col4.metric("🌿 Node Self-Sufficiency Index", f"{res['green_mitigation_pct']:.1f}%")
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # 2. View Layouts (Now persistent across clicks!)
+    tab1, tab2 = st.tabs(["📊 Battery Dispatch Analytics", "📋 Detailed Data Ledger"])
+    
+    with tab1:
+        fig = go.Figure()
+        
+        # Consumer Demand Profile Line
+        fig.add_trace(go.Scatter(
+            x=results_df["Time"], y=results_df["Demand"],
+            mode='lines', line=dict(color='#FFA500', width=2.5),
+            name='Consumer Demand Profile (kW)'
+        ))
+        
+        # Solar Array Production Line
+        fig.add_trace(go.Scatter(
+            x=results_df["Time"], y=results_df["Generation"],
+            mode='lines', line=dict(color='#00CC96', width=2.5),
+            name='Solar Production Vector (kW)'
+        ))
+
+        # Real-Time Battery Storage Charge Volume Line (Smooth Spline Area)
+        fig.add_trace(go.Scatter(
+            x=results_df["Time"], y=results_df["Battery Storage (kWh)"],
+            fill='tozeroy', fillcolor='rgba(0, 191, 255, 0.1)',
+            mode='lines', line=dict(color='#00BFFF', width=3, shape='spline'),
+            name='Battery Reserve Level (kWh)'
+        ))
+        
+        # Unmet Deficit (What the battery couldn't save us from)
+        fig.add_trace(go.Scatter(
+            x=results_df["Time"], y=results_df["True Deficit (Fossil-Fuel Backup)"],
+            mode='lines', line=dict(color='#FF4B4B', width=2, dash='dash'),
+            name='External Grid Dependency (kW)'
+        ))
+        
+        fig.update_layout(
+            title=dict(text=f"BESS Battery Balancing & Injection Matrix: {selected_city}", font=dict(size=18, color="#FAFAFA")),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            hovermode="x unified",
+            legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"),
+            xaxis=dict(showgrid=False, tickangle=-45),
+            yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', title="Power / Storage Value Scale")
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+    with tab2:
+        st.dataframe(results_df, use_container_width=True)
+else:
+    if weather_df is not None:
+        st.info(f"Press the button above to run the predictive storage simulation for {selected_city}.")
+    else:
+        st.info("System initializing storage channels. Please hold.")
