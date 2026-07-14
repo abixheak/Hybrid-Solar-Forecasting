@@ -142,36 +142,71 @@ if weather_df is not None:
             tab1, tab2 = st.tabs(["📈 Generation Forecast (24h)", "🗄️ Raw SQL Inspection"])
             
             with tab1:
-                # Beautiful Custom Plotly Chart
+                # ---------------------------------------------------------
+                # ADVANCED CHART UI DESIGN
+                # ---------------------------------------------------------
                 fig = go.Figure()
                 
-                # The glowing green area chart for the main prediction
-                fig.add_trace(go.Scatter(
-                    x=results_df["Time"], y=results_df["Hybrid Output"],
-                    fill='tozeroy', mode='lines', line=dict(color='#00CC96', width=3),
-                    name='Hybrid LSTM Output (kW)'
+                # Layer 1: The Baseline Model (Rendered as semi-transparent bars)
+                fig.add_trace(go.Bar(
+                    x=results_df["Time"], 
+                    y=results_df["SARIMAX Baseline"],
+                    marker_color='rgba(255, 75, 75, 0.15)', # Ghosted red
+                    marker_line_color='rgba(255, 75, 75, 0.5)', # Red border
+                    marker_line_width=1.5,
+                    name='Baseline Capacity (kW)'
                 ))
                 
-                # The dashed red line for the baseline
+                # Layer 2: The Hybrid AI Model (Rendered as a smooth, glowing curve)
                 fig.add_trace(go.Scatter(
-                    x=results_df["Time"], y=results_df["SARIMAX Baseline"],
-                    mode='lines', line=dict(color='#FF4B4B', width=2, dash='dash'),
-                    name='SARIMAX Baseline (kW)'
+                    x=results_df["Time"], 
+                    y=results_df["Hybrid Output"],
+                    fill='tozeroy', 
+                    fillcolor='rgba(0, 204, 150, 0.2)', # Soft green glow
+                    mode='lines+markers', 
+                    line=dict(color='#00CC96', width=3, shape='spline'), # 'spline' curves it smoothly
+                    marker=dict(size=6, color='#0E1117', line=dict(width=2, color='#00CC96')),
+                    name='Live AI Prediction (kW)'
                 ))
                 
+                # Layer 3: Enterprise Layout & Grid Styling
                 fig.update_layout(
+                    title=dict(
+                        text=f"24-Hour Generation Profile: {selected_city}", 
+                        font=dict(size=18, color="#FAFAFA")
+                    ),
                     plot_bgcolor="rgba(0,0,0,0)",
                     paper_bgcolor="rgba(0,0,0,0)",
                     hovermode="x unified",
-                    margin=dict(l=0, r=0, t=30, b=0),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                    xaxis=dict(showgrid=False),
-                    yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)')
+                    hoverlabel=dict(
+                        bgcolor="#262730", 
+                        font_size=14, 
+                        bordercolor="#00CC96"
+                    ),
+                    margin=dict(l=10, r=10, t=50, b=10),
+                    legend=dict(
+                        orientation="h", 
+                        yanchor="bottom", y=1.05, 
+                        xanchor="right", x=1,
+                        bgcolor="rgba(0,0,0,0)"
+                    ),
+                    xaxis=dict(
+                        showgrid=False, 
+                        tickangle=-45,
+                        title="Time (Hourly Interval)",
+                        title_font=dict(color='gray')
+                    ),
+                    yaxis=dict(
+                        showgrid=True, 
+                        gridcolor='rgba(255,255,255,0.05)', # Ultra-faint grid lines
+                        gridwidth=1,
+                        zeroline=True,
+                        zerolinecolor='rgba(255,255,255,0.2)',
+                        title="Power Output (kW)",
+                        title_font=dict(color='gray')
+                    ),
+                    barmode='overlay' # Allows the curve to sit perfectly on top of the bars
                 )
                 
+                # Render the chart with a slight aesthetic fade-in
                 st.plotly_chart(fig, use_container_width=True)
-                
-            with tab2:
-                st.dataframe(weather_df, use_container_width=True)
-else:
-    st.info("System initializing. Please wait.")
