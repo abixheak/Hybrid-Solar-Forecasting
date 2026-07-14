@@ -118,7 +118,7 @@ if weather_df is not None:
             lstm_corrections = [-25 * np.cos(i/3) if val > 0 else 0 for i, val in enumerate(base_gen)]
             hybrid_pred = [max(0, s + l) for s, l in zip(sarimax_pred, lstm_corrections)]
 
-           results_df = pd.DataFrame({
+            results_df = pd.DataFrame({
                 "Time": weather_df["timestamp"].dt.strftime('%H:%M'),
                 "SARIMAX Baseline (kW)": sarimax_pred,
                 "Hybrid Engine Output (kW)": hybrid_pred
@@ -155,4 +155,6 @@ if weather_df is not None:
             with tab2:
                 st.subheader("Raw SQLite Record Set")
                 st.dataframe(weather_df, use_container_width=True)
+else:
+    st.error("Cannot run prediction. Automated pipeline is rebuilding database structures. Please refresh the page.")
    
