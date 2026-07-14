@@ -155,5 +155,4 @@ if weather_df is not None:
             with tab2:
                 st.subheader("Raw SQLite Record Set")
                 st.dataframe(weather_df, use_container_width=True)
-else:
-    st.error("Cannot run prediction. Automated pipeline is rebuilding database structures. Please refresh the page.")
+   
