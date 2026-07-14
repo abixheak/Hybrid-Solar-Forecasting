@@ -18,7 +18,7 @@ st.set_page_config(
 )
 
 # Cloud-writable scratchpad directory for SQLite
-DB_PATH = os.path.join(tempfile.gettempdir(), "solar_data_fleet_v3.db")
+DB_PATH = os.path.join(tempfile.gettempdir(), "solar_data_fleet_v4.db")
 
 # ENTERPRISE REGIONAL REGISTRY WITH BASE DEMAND LOGIC
 LOCATIONS = {
@@ -27,6 +27,14 @@ LOCATIONS = {
     "Mumbai": {"lat": 19.0760, "lon": 72.8777, "factor": 0.90, "base_demand": 260},
     "Bengaluru": {"lat": 12.9716, "lon": 77.5946, "factor": 1.05, "base_demand": 190}
 }
+
+# -----------------------------------------------------------------------------
+# PERSISTENT SESSION STATE INITIALIZATION
+# -----------------------------------------------------------------------------
+if "simulation_results" not in st.session_state:
+    st.session_state.simulation_results = None
+if "current_active_city" not in st.session_state:
+    st.session_state.current_active_city = None
 
 # -----------------------------------------------------------------------------
 # DATABASE ORCHESTRATION
@@ -93,9 +101,13 @@ st.sidebar.markdown("### ⚙️ Control Center")
 selected_city = st.sidebar.selectbox("🎯 Target Grid Node", list(LOCATIONS.keys()))
 geo_data = LOCATIONS[selected_city]
 
+# If the user switches cities, clear the old simulation results from memory
+if st.session_state.current_active_city != selected_city:
+    st.session_state.simulation_results = None
+    st.session_state.current_active_city = selected_city
+
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### 🔋 BESS Configuration")
-# Battery Capacity Control Input
 battery_capacity = st.sidebar.slider("Storage Tank Max Capacity (kWh)", 200, 1000, 500, 50)
 initial_charge_pct = st.sidebar.slider("Initial State of Charge (SoC %)", 0, 100, 20, 5)
 
@@ -109,8 +121,9 @@ weather_df, db_status = fetch_location_data_from_sql(selected_city)
 st.sidebar.success(db_status)
 
 # -----------------------------------------------------------------------------
-# DISPATCH & STORAGE METRICS ENGINE
+# SIMULATION TRIGGER & COMPUTATIONAL ENGINE
 # -----------------------------------------------------------------------------
+# Execute simulation and save results to Session State memory on click
 if weather_df is not None:
     if st.button(f"🚀 Run Battery Dispatch Simulation for {selected_city}", type="primary", use_container_width=True):
         with st.spinner("Processing thermodynamic models against virtual battery dispatch matrices..."):
@@ -132,47 +145,4 @@ if weather_df is not None:
                 demand.append(max(20, hourly_demand))
 
             # 2. Sequential BESS Time-Series Simulation Loop
-            current_charge = battery_capacity * (initial_charge_pct / 100.0)
-            battery_soc_history = []
-            unmet_deficit_history = []
-            wasted_surplus_history = []
-            
-            for gen, dem in zip(generation, demand):
-                raw_delta = gen - dem
-                
-                if raw_delta > 0:
-                    # Surplus Scenario: Funnel energy into the storage cells
-                    available_room = battery_capacity - current_charge
-                    energy_to_store = min(raw_delta, available_room)
-                    current_charge += energy_to_store
-                    
-                    wasted_surplus = raw_delta - energy_to_store
-                    unmet_deficit = 0
-                else:
-                    # Deficit Scenario: Draw power back out from cells
-                    needed_energy = abs(raw_delta)
-                    energy_dispatched = min(needed_energy, current_charge)
-                    current_charge -= energy_dispatched
-                    
-                    unmet_deficit = needed_energy - energy_dispatched
-                    wasted_surplus = 0
-                    
-                battery_soc_history.append(current_charge)
-                unmet_deficit_history.append(unmet_deficit)
-                wasted_surplus_history.append(wasted_surplus)
-
-            # Performance Analytics Aggregations
-            total_gen = np.trapezoid(generation, dx=1.0)
-            total_dem = np.trapezoid(demand, dx=1.0)
-            total_grid_dependency = sum(unmet_deficit_history)
-            
-            green_mitigation_pct = 100 * (1.0 - (total_grid_dependency / total_dem)) if total_dem > 0 else 100
-
-         # Compile into structures
-            results_df = pd.DataFrame({
-                "Time": weather_df["timestamp"].dt.strftime('%H:%M'),
-                "Generation": generation,
-                "Demand": demand,
-                "Battery Storage (kWh)": battery_soc_history,
-                "True Deficit (Fossil-Fuel Backup)": unmet_deficit_history
-            })
+            current_charge = battery_capacity * (initial_charge_pct
