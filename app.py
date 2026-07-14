@@ -5,32 +5,31 @@ import numpy as np
 import sqlite3
 import requests
 from datetime import date, timedelta
-import plotly.express as px
 import plotly.graph_objects as go
 import os
 import tempfile
 
-# 1. PAGE CONFIGURATION (Must be the first Streamlit command)
+# PAGE CONFIGURATION
 st.set_page_config(
-    page_title="SolarNet | Forecast Engine",
-    page_icon="☀️",
+    page_title="SolarNet | Storage & Grid Engine",
+    page_icon="🔋",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Force the database file to sit in a cloud-writable scratchpad directory
-DB_PATH = os.path.join(tempfile.gettempdir(), "solar_data_fleet.db")
+# Cloud-writable scratchpad directory for SQLite
+DB_PATH = os.path.join(tempfile.gettempdir(), "solar_data_fleet_v3.db")
 
-# ENTERPRISE LOCATION REGISTER
+# ENTERPRISE REGIONAL REGISTRY WITH BASE DEMAND LOGIC
 LOCATIONS = {
-    "Chennai": {"lat": 13.0827, "lon": 80.2707, "factor": 1.0},
-    "New Delhi": {"lat": 28.6139, "lon": 77.2090, "factor": 1.15},
-    "Mumbai": {"lat": 19.0760, "lon": 72.8777, "factor": 0.90},
-    "Bengaluru": {"lat": 12.9716, "lon": 77.5946, "factor": 1.05}
+    "Chennai": {"lat": 13.0827, "lon": 80.2707, "factor": 1.0, "base_demand": 220},
+    "New Delhi": {"lat": 28.6139, "lon": 77.2090, "factor": 1.15, "base_demand": 280},
+    "Mumbai": {"lat": 19.0760, "lon": 72.8777, "factor": 0.90, "base_demand": 260},
+    "Bengaluru": {"lat": 12.9716, "lon": 77.5946, "factor": 1.05, "base_demand": 190}
 }
 
 # -----------------------------------------------------------------------------
-# DATABASE FUNCTIONS (Unchanged, running smoothly)
+# DATABASE ORCHESTRATION
 # -----------------------------------------------------------------------------
 def initialize_and_populate_db(location_name, lat, lon):
     conn = sqlite3.connect(DB_PATH)
@@ -84,129 +83,95 @@ def fetch_location_data_from_sql(location_name):
         return None, f"Database Error: {str(e)}"
 
 # -----------------------------------------------------------------------------
-# FRONTEND UI & SIDEBAR
+# APPLICATION INTERFACE LAYOUT
 # -----------------------------------------------------------------------------
-# Main Header
-st.markdown("## ☀️ SolarNet Enterprise Dashboard")
-st.markdown("Real-time distributed solar generation forecasting across regional grid nodes.")
+st.markdown("## 🔋 SolarNet Microgrid Storage Integration")
+st.markdown("Automated solar dispatch engine tracking BESS (Battery Energy Storage System) balancing loops.")
 st.divider()
 
-# Sidebar Styling
 st.sidebar.markdown("### ⚙️ Control Center")
 selected_city = st.sidebar.selectbox("🎯 Target Grid Node", list(LOCATIONS.keys()))
 geo_data = LOCATIONS[selected_city]
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Node Telemetry")
-st.sidebar.code(f"LAT: {geo_data['lat']}° N\nLON: {geo_data['lon']}° E", language="text")
+st.sidebar.markdown("#### 🔋 BESS Configuration")
+# Battery Capacity Control Input
+battery_capacity = st.sidebar.slider("Storage Tank Max Capacity (kWh)", 200, 1000, 500, 50)
+initial_charge_pct = st.sidebar.slider("Initial State of Charge (SoC %)", 0, 100, 20, 5)
 
-# Initialize DB & Fetch
+st.sidebar.markdown("---")
+st.sidebar.markdown("#### Dynamic Load Adjustments")
+load_scaler = st.sidebar.slider("Simulated Peak Load Modifier", 0.7, 1.5, 1.0, 0.05)
+
+# Initialize and verify database operations
 initialize_and_populate_db(selected_city, geo_data['lat'], geo_data['lon'])
 weather_df, db_status = fetch_location_data_from_sql(selected_city)
 st.sidebar.success(db_status)
 
 # -----------------------------------------------------------------------------
-# MAIN DASHBOARD AREA
+# DISPATCH & STORAGE METRICS ENGINE
 # -----------------------------------------------------------------------------
 if weather_df is not None:
-    if st.button(f"⚡ Generate Predictive Model for {selected_city}", type="primary", use_container_width=True):
-        with st.spinner("Initializing neural network inference & matrix calculations..."):
+    if st.button(f"🚀 Run Battery Dispatch Simulation for {selected_city}", type="primary", use_container_width=True):
+        with st.spinner("Processing thermodynamic models against virtual battery dispatch matrices..."):
             
-            # Mathematical Simulation Logic
+            # 1. Generation & Consumption Profiling
             factor = geo_data['factor']
-            base_gen = [max(0, 450 * np.sin(i/24 * np.pi)) * factor if 6 <= i <= 18 else 0 for i in range(24)]
-            sarimax_pred = [val * (1 + 0.12 * np.sin(i)) if val > 0 else 0 for i, val in enumerate(base_gen)]
-            lstm_corrections = [-25 * np.cos(i/3) if val > 0 else 0 for i, val in enumerate(base_gen)]
-            hybrid_pred = [max(0, s + l) for s, l in zip(sarimax_pred, lstm_corrections)]
+            base_gen = [max(0, 480 * np.sin(i/24 * np.pi)) * factor if 6 <= i <= 18 else 0 for i in range(24)]
+            sarimax_pred = [val * (1 + 0.10 * np.sin(i)) if val > 0 else 0 for i, val in enumerate(base_gen)]
+            lstm_corrections = [-20 * np.cos(i/3) if val > 0 else 0 for i, val in enumerate(base_gen)]
+            generation = [max(0, s + l) for s, l in zip(sarimax_pred, lstm_corrections)]
 
+            base_load = geo_data['base_demand'] * load_scaler
+            demand = []
+            for hour in range(24):
+                morning_peak = 0.4 * np.exp(-((hour - 9) / 2.5) ** 2)
+                evening_peak = 0.7 * np.exp(-((hour - 19) / 3.0) ** 2)
+                night_dip = 0.2 if (hour < 5 or hour > 22) else 0.35
+                hourly_demand = base_load * (night_dip + morning_peak + evening_peak + np.random.uniform(-0.02, 0.02))
+                demand.append(max(20, hourly_demand))
+
+            # 2. Sequential BESS Time-Series Simulation Loop
+            current_charge = battery_capacity * (initial_charge_pct / 100.0)
+            battery_soc_history = []
+            unmet_deficit_history = []
+            wasted_surplus_history = []
+            
+            for gen, dem in zip(generation, demand):
+                raw_delta = gen - dem
+                
+                if raw_delta > 0:
+                    # Surplus Scenario: Funnel energy into the storage cells
+                    available_room = battery_capacity - current_charge
+                    energy_to_store = min(raw_delta, available_room)
+                    current_charge += energy_to_store
+                    
+                    wasted_surplus = raw_delta - energy_to_store
+                    unmet_deficit = 0
+                else:
+                    # Deficit Scenario: Draw power back out from cells
+                    needed_energy = abs(raw_delta)
+                    energy_dispatched = min(needed_energy, current_charge)
+                    current_charge -= energy_dispatched
+                    
+                    unmet_deficit = needed_energy - energy_dispatched
+                    wasted_surplus = 0
+                    
+                battery_soc_history.append(current_charge)
+                unmet_deficit_history.append(unmet_deficit)
+                wasted_surplus_history.append(wasted_surplus)
+
+            # Performance Analytics Aggregations
+            total_gen = np.trapezoid(generation, dx=1.0)
+            total_dem = np.trapezoid(demand, dx=1.0)
+            total_grid_dependency = sum(unmet_deficit_history)
+            
+            green_mitigation_pct = 100 * (1.0 - (total_grid_dependency / total_dem)) if total_dem > 0 else 100
+
+            # Compile into structures
             results_df = pd.DataFrame({
                 "Time": weather_df["timestamp"].dt.strftime('%H:%M'),
-                "SARIMAX Baseline": sarimax_pred,
-                "Hybrid Output": hybrid_pred
-            })
-            
-            # UI Pop-up
-            st.toast(f"Forecast successfully compiled for {selected_city}!", icon="✅")
-            
-            # Top-Row KPI Metrics
-            total_kwh = np.trapezoid(hybrid_pred, dx=1.0)
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Est. Energy Yield", f"{total_kwh:.1f} kWh", delta="Optimal")
-            c2.metric("Active Node", selected_city)
-            c3.metric("Grid Status", "Stable")
-            c4.metric("Query Latency", "< 2ms", delta="-1ms", delta_color="inverse")
-            
-            st.markdown("<br>", unsafe_allow_html=True) # Adds a little breathing room
-            
-            # Tabbed Layout
-            tab1, tab2 = st.tabs(["📈 Generation Forecast (24h)", "🗄️ Raw SQL Inspection"])
-            
-            with tab1:
-                # ---------------------------------------------------------
-                # ADVANCED CHART UI DESIGN
-                # ---------------------------------------------------------
-                fig = go.Figure()
-                
-                # Layer 1: The Baseline Model (Rendered as semi-transparent bars)
-                fig.add_trace(go.Bar(
-                    x=results_df["Time"], 
-                    y=results_df["SARIMAX Baseline"],
-                    marker_color='rgba(255, 75, 75, 0.15)', # Ghosted red
-                    marker_line_color='rgba(255, 75, 75, 0.5)', # Red border
-                    marker_line_width=1.5,
-                    name='Baseline Capacity (kW)'
-                ))
-                
-                # Layer 2: The Hybrid AI Model (Rendered as a smooth, glowing curve)
-                fig.add_trace(go.Scatter(
-                    x=results_df["Time"], 
-                    y=results_df["Hybrid Output"],
-                    fill='tozeroy', 
-                    fillcolor='rgba(0, 204, 150, 0.2)', # Soft green glow
-                    mode='lines+markers', 
-                    line=dict(color='#00CC96', width=3, shape='spline'), # 'spline' curves it smoothly
-                    marker=dict(size=6, color='#0E1117', line=dict(width=2, color='#00CC96')),
-                    name='Live AI Prediction (kW)'
-                ))
-                
-                # Layer 3: Enterprise Layout & Grid Styling
-                fig.update_layout(
-                    title=dict(
-                        text=f"24-Hour Generation Profile: {selected_city}", 
-                        font=dict(size=18, color="#FAFAFA")
-                    ),
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    hovermode="x unified",
-                    hoverlabel=dict(
-                        bgcolor="#262730", 
-                        font_size=14, 
-                        bordercolor="#00CC96"
-                    ),
-                    margin=dict(l=10, r=10, t=50, b=10),
-                    legend=dict(
-                        orientation="h", 
-                        yanchor="bottom", y=1.05, 
-                        xanchor="right", x=1,
-                        bgcolor="rgba(0,0,0,0)"
-                    ),
-                    xaxis=dict(
-                        showgrid=False, 
-                        tickangle=-45,
-                        title="Time (Hourly Interval)",
-                        title_font=dict(color='gray')
-                    ),
-                    yaxis=dict(
-                        showgrid=True, 
-                        gridcolor='rgba(255,255,255,0.05)', # Ultra-faint grid lines
-                        gridwidth=1,
-                        zeroline=True,
-                        zerolinecolor='rgba(255,255,255,0.2)',
-                        title="Power Output (kW)",
-                        title_font=dict(color='gray')
-                    ),
-                    barmode='overlay' # Allows the curve to sit perfectly on top of the bars
-                )
-                
-                # Render the chart with a slight aesthetic fade-in
-                st.plotly_chart(fig, use_container_width=True)
+                "Generation": generation,
+                "Demand": demand,
+                "Battery Storage (kWh)": battery_soc_history,
+                "True Deficit (Fossil-Fuel Backup)": unmet_deficit_history
