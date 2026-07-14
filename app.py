@@ -9,16 +9,65 @@ import plotly.graph_objects as go
 import os
 import tempfile
 
-# PAGE CONFIGURATION
+# 1. PAGE CONFIGURATION
 st.set_page_config(
-    page_title="SolarNet | Storage & Grid Engine",
+    page_title="SolarNet | Storage Engine",
     page_icon="🔋",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
+# 2. CUSTOM CSS INJECTION (The Secret to the UI Upgrade)
+st.markdown("""
+    <style>
+    /* Gradient Title */
+    .gradient-text {
+        font-size: 2.8rem !important;
+        font-weight: 800 !important;
+        background: -webkit-linear-gradient(45deg, #00CC96, #00BFFF);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin-bottom: 0px !important;
+        padding-bottom: 0px !important;
+    }
+    
+    /* Subtitle styling */
+    .sub-text {
+        font-size: 1.1rem;
+        color: #A0AEC0;
+        margin-top: -10px;
+        margin-bottom: 30px;
+    }
+
+    /* Floating KPI Cards */
+    div[data-testid="stMetric"] {
+        background-color: #171923;
+        border: 1px solid #2D3748;
+        padding: 15px 20px;
+        border-radius: 12px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.4);
+        transition: transform 0.2s ease;
+    }
+    div[data-testid="stMetric"]:hover {
+        transform: translateY(-5px);
+        border-color: #00CC96;
+    }
+
+    /* Hide Streamlit Branding for a standalone app feel */
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+    
+    /* Enhance sidebar background */
+    [data-testid="stSidebar"] {
+        background-color: #0E1117;
+        border-right: 1px solid #2D3748;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 # Cloud-writable scratchpad directory for SQLite
-DB_PATH = os.path.join(tempfile.gettempdir(), "solar_data_fleet_v4.db")
+DB_PATH = os.path.join(tempfile.gettempdir(), "solar_data_fleet_v5.db")
 
 # ENTERPRISE REGIONAL REGISTRY WITH BASE DEMAND LOGIC
 LOCATIONS = {
@@ -84,51 +133,50 @@ def fetch_location_data_from_sql(location_name):
         df = pd.read_sql_query(query, conn)
         conn.close()
         
-        if df.empty: return None, "⚠️ Syncing telemetry stream..."
+        if df.empty: return None, "⚠️ Syncing telemetry..."
         df["timestamp"] = pd.to_datetime(df["timestamp"])
-        return df, f"✅ {location_name} Node Online"
+        return df, f"✅ {location_name} Node Connected"
     except Exception as e:
         return None, f"Database Error: {str(e)}"
 
 # -----------------------------------------------------------------------------
 # APPLICATION INTERFACE LAYOUT
 # -----------------------------------------------------------------------------
-st.markdown("## 🔋 SolarNet Microgrid Storage Integration")
-st.markdown("Automated solar dispatch engine tracking BESS (Battery Energy Storage System) balancing loops.")
-st.divider()
+st.markdown('<p class="gradient-text">SolarNet Microgrid OS</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">Automated solar dispatch engine and BESS balancing dashboard.</p>', unsafe_allow_html=True)
 
-st.sidebar.markdown("### ⚙️ Control Center")
+# SIDEBAR: Cleaner, grouped UI
+st.sidebar.markdown("### 🎛️ Command Center")
 selected_city = st.sidebar.selectbox("🎯 Target Grid Node", list(LOCATIONS.keys()))
 geo_data = LOCATIONS[selected_city]
 
-# If the user switches cities, clear the old simulation results from memory
 if st.session_state.current_active_city != selected_city:
     st.session_state.simulation_results = None
     st.session_state.current_active_city = selected_city
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("#### 🔋 BESS Configuration")
-battery_capacity = st.sidebar.slider("Storage Tank Max Capacity (kWh)", 200, 1000, 500, 50)
-initial_charge_pct = st.sidebar.slider("Initial State of Charge (SoC %)", 0, 100, 20, 5)
+# Grouped Settings inside Expanders
+with st.sidebar.expander("🔋 BESS Configuration", expanded=True):
+    battery_capacity = st.slider("Storage Capacity (kWh)", 200, 1000, 500, 50)
+    initial_charge_pct = st.slider("Initial Charge (SoC %)", 0, 100, 20, 5)
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("#### Dynamic Load Adjustments")
-load_scaler = st.sidebar.slider("Simulated Peak Load Modifier", 0.7, 1.5, 1.0, 0.05)
+with st.sidebar.expander("📈 Demand Modifications", expanded=False):
+    load_scaler = st.slider("Peak Load Modifier", 0.7, 1.5, 1.0, 0.05)
+    st.caption("Simulate heatwaves or high-demand events.")
 
 # Initialize and verify database operations
 initialize_and_populate_db(selected_city, geo_data['lat'], geo_data['lon'])
 weather_df, db_status = fetch_location_data_from_sql(selected_city)
+st.sidebar.markdown("---")
 st.sidebar.success(db_status)
 
 # -----------------------------------------------------------------------------
-# SIMULATION TRIGGER & COMPUTATIONAL ENGINE
+# SIMULATION TRIGGER
 # -----------------------------------------------------------------------------
-# Execute simulation and save results to Session State memory on click
 if weather_df is not None:
-    if st.button(f"🚀 Run Battery Dispatch Simulation for {selected_city}", type="primary", use_container_width=True):
-        with st.spinner("Processing thermodynamic models against virtual battery dispatch matrices..."):
+    if st.button(f"⚡ Run Grid Dispatch Simulation for {selected_city}", type="primary", use_container_width=True):
+        with st.spinner("Processing neural generation and thermodynamic matrices..."):
             
-            # 1. Generation & Consumption Profiling
+            # Logic Engine (Unchanged)
             factor = geo_data['factor']
             base_gen = [max(0, 480 * np.sin(i/24 * np.pi)) * factor if 6 <= i <= 18 else 0 for i in range(24)]
             sarimax_pred = [val * (1 + 0.10 * np.sin(i)) if val > 0 else 0 for i, val in enumerate(base_gen)]
@@ -144,14 +192,12 @@ if weather_df is not None:
                 hourly_demand = base_load * (night_dip + morning_peak + evening_peak + np.random.uniform(-0.02, 0.02))
                 demand.append(max(20, hourly_demand))
 
-           # 2. Sequential BESS Time-Series Simulation Loop
             current_charge = battery_capacity * (initial_charge_pct / 100.0)
             battery_soc_history = []
             unmet_deficit_history = []
             
             for gen, dem in zip(generation, demand):
                 raw_delta = gen - dem
-                
                 if raw_delta > 0:
                     available_room = battery_capacity - current_charge
                     energy_to_store = min(raw_delta, available_room)
@@ -166,47 +212,44 @@ if weather_df is not None:
                 battery_soc_history.append(current_charge)
                 unmet_deficit_history.append(unmet_deficit)
 
-            # Performance Analytics Aggregations
             total_gen = np.trapezoid(generation, dx=1.0)
             total_dem = np.trapezoid(demand, dx=1.0)
             total_grid_dependency = sum(unmet_deficit_history)
             green_mitigation_pct = 100 * (1.0 - (total_grid_dependency / total_dem)) if total_dem > 0 else 100
-            grid_status_text = "🟢 Net Surplus" if total_gen > total_grid_dependency else "🔴 Net Base-Load Dependent"
 
-            # Save everything cleanly in st.session_state
             st.session_state.simulation_results = {
                 "total_gen": total_gen,
                 "total_dem": total_dem,
                 "total_grid_dependency": total_grid_dependency,
                 "green_mitigation_pct": green_mitigation_pct,
-                "grid_status_text": grid_status_text,
                 "data_frame_records": {
                     "Time": weather_df["timestamp"].dt.strftime('%H:%M'),
                     "Generation": generation,
                     "Demand": demand,
                     "Battery Storage (kWh)": battery_soc_history,
-                    "True Deficit (Fossil-Fuel Backup)": unmet_deficit_history
+                    "True Deficit (Fossil Backup)": unmet_deficit_history
                 }
             }
-            st.toast("Storage simulation completed!", icon="🔋")
 
 # -----------------------------------------------------------------------------
-# RENDERING LAYER (Runs on every rerun, checking if session results exist)
+# RENDERING LAYER
 # -----------------------------------------------------------------------------
 if st.session_state.simulation_results is not None:
     res = st.session_state.simulation_results
     results_df = pd.DataFrame(res["data_frame_records"])
     
-    # 1. KPI Data Banner
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("☀️ Total Generation", f"{res['total_gen']:.1f} kWh")
-    col2.metric("🔌 Total Demand Profile", f"{res['total_dem']:.1f} kWh")
-    col3.metric("🚨 Remaining Grid Dependency", f"{res['total_grid_dependency']:.1f} kWh")
-    col4.metric("🌿 Node Self-Sufficiency Index", f"{res['green_mitigation_pct']:.1f}%")
-    
     st.markdown("<br>", unsafe_allow_html=True)
+    
+    # 1. Custom Styled KPI Banner
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("☀️ Total Generation", f"{res['total_gen']:,.1f} kWh")
+    col2.metric("🔌 Demand Profile", f"{res['total_dem']:,.1f} kWh")
+    col3.metric("🚨 Grid Dependency", f"{res['total_grid_dependency']:,.1f} kWh")
+    col4.metric("🌿 Self-Sufficiency", f"{res['green_mitigation_pct']:.1f}%")
+    
+    st.markdown("<br><br>", unsafe_allow_html=True)
 
-    # 2. View Layouts (Now persistent across clicks!)
+    # 2. View Layouts
     tab1, tab2 = st.tabs(["📊 Battery Dispatch Analytics", "📋 Detailed Data Ledger"])
     
     with tab1:
@@ -216,38 +259,38 @@ if st.session_state.simulation_results is not None:
         fig.add_trace(go.Scatter(
             x=results_df["Time"], y=results_df["Demand"],
             mode='lines', line=dict(color='#FFA500', width=2.5),
-            name='Consumer Demand Profile (kW)'
+            name='Demand Profile (kW)'
         ))
         
         # Solar Array Production Line
         fig.add_trace(go.Scatter(
             x=results_df["Time"], y=results_df["Generation"],
             mode='lines', line=dict(color='#00CC96', width=2.5),
-            name='Solar Production Vector (kW)'
+            name='Solar Production (kW)'
         ))
 
-        # Real-Time Battery Storage Charge Volume Line (Smooth Spline Area)
+        # Battery Storage Area
         fig.add_trace(go.Scatter(
             x=results_df["Time"], y=results_df["Battery Storage (kWh)"],
             fill='tozeroy', fillcolor='rgba(0, 191, 255, 0.1)',
             mode='lines', line=dict(color='#00BFFF', width=3, shape='spline'),
-            name='Battery Reserve Level (kWh)'
+            name='Battery Reserve (kWh)'
         ))
         
-        # Unmet Deficit (What the battery couldn't save us from)
+        # Unmet Deficit
         fig.add_trace(go.Scatter(
-            x=results_df["Time"], y=results_df["True Deficit (Fossil-Fuel Backup)"],
+            x=results_df["Time"], y=results_df["True Deficit (Fossil Backup)"],
             mode='lines', line=dict(color='#FF4B4B', width=2, dash='dash'),
-            name='External Grid Dependency (kW)'
+            name='External Grid (kW)'
         ))
         
         fig.update_layout(
-            title=dict(text=f"BESS Battery Balancing & Injection Matrix: {selected_city}", font=dict(size=18, color="#FAFAFA")),
+            title=dict(text=f"BESS Balancing Matrix: {selected_city}", font=dict(size=18, color="#FAFAFA")),
             plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
             hovermode="x unified",
             legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"),
             xaxis=dict(showgrid=False, tickangle=-45),
-            yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', title="Power / Storage Value Scale")
+            yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', title="Power / Storage (kW)")
         )
         st.plotly_chart(fig, use_container_width=True)
         
@@ -255,6 +298,6 @@ if st.session_state.simulation_results is not None:
         st.dataframe(results_df, use_container_width=True)
 else:
     if weather_df is not None:
-        st.info(f"Press the button above to run the predictive storage simulation for {selected_city}.")
+        st.info(f"Ready. Configure BESS parameters on the left and run the simulation.")
     else:
-        st.info("System initializing storage channels. Please hold.")
+        st.info("System initializing telemetry...")
