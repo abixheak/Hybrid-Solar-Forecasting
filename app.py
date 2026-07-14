@@ -168,10 +168,11 @@ if weather_df is not None:
             
             green_mitigation_pct = 100 * (1.0 - (total_grid_dependency / total_dem)) if total_dem > 0 else 100
 
-            # Compile into structures
+         # Compile into structures
             results_df = pd.DataFrame({
                 "Time": weather_df["timestamp"].dt.strftime('%H:%M'),
                 "Generation": generation,
                 "Demand": demand,
                 "Battery Storage (kWh)": battery_soc_history,
                 "True Deficit (Fossil-Fuel Backup)": unmet_deficit_history
+            })
