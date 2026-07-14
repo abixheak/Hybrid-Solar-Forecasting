@@ -124,7 +124,7 @@ if weather_df is not None:
             }).set_index("Time")
             
             # Display Metrics
-            total_kwh = np.trapz(hybrid_pred, dx=1.0)
+           total_kwh = np.trapezoid(hybrid_pred, dx=1.0)
             col1, col2, col3 = st.columns(3)
             col1.metric("Est. Energy Yield", f"{total_kwh:.2f} kWh")
             col2.metric("Data Source", "SQLite DB (Active)")
