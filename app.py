@@ -157,4 +157,56 @@ def fetch_location_data_from_sql(location_name):
         conn = sqlite3.connect(DB_PATH)
         tomorrow_str = str(date.today() + timedelta(days=1))
         # Selecting the new wind_speed column for downstream processing
-        query = f"SELECT timestamp, temperature, humidity
+        query = f"SELECT timestamp, temperature, humidity, cloud_cover, irradiance, wind_speed FROM real_time_weather WHERE location = '{location_name}' AND timestamp LIKE '{tomorrow_str}%' ORDER BY timestamp ASC"
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+        
+        if df.empty: return None, "⚠️ Syncing telemetry..."
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        return df, f"✅ {location_name} Node Connected"
+    except Exception as e:
+        return None, f"Database Error: {str(e)}"
+
+# -----------------------------------------------------------------------------
+# APPLICATION INTERFACE LAYOUT
+# -----------------------------------------------------------------------------
+st.markdown('<p class="gradient-text">SolarNet Microgrid OS</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">Automated solar dispatch engine and BESS balancing dashboard.</p>', unsafe_allow_html=True)
+
+# SIDEBAR
+st.sidebar.markdown("### 🎛️ Command Center")
+selected_city = st.sidebar.selectbox("🎯 Target Grid Node", list(LOCATIONS.keys()))
+geo_data = LOCATIONS[selected_city]
+
+if st.session_state.current_active_city != selected_city:
+    st.session_state.simulation_results = None
+    st.session_state.current_active_city = selected_city
+
+with st.sidebar.expander("🔋 BESS Configuration", expanded=True):
+    battery_capacity = st.slider("Storage Capacity (kWh)", 200, 1000, 500, 50)
+    initial_charge_pct = st.slider("Initial Charge (SoC %)", 0, 100, 20, 5)
+
+with st.sidebar.expander("📈 Demand Modifications", expanded=False):
+    load_scaler = st.slider("Peak Load Modifier", 0.7, 1.5, 1.0, 0.05)
+    st.caption("Simulate heatwaves or high-demand events.")
+
+# Display model readiness status
+if sarimax_model is None or lstm_model is None:
+    st.sidebar.error("⚠️ AI Models offline. Check root directory.")
+else:
+    st.sidebar.success("🤖 Hybrid AI Models Online")
+
+initialize_and_populate_db(selected_city, geo_data['lat'], geo_data['lon'])
+weather_df, db_status = fetch_location_data_from_sql(selected_city)
+st.sidebar.markdown("---")
+st.sidebar.success(db_status)
+
+# -----------------------------------------------------------------------------
+# SIMULATION TRIGGER & AI INFERENCE ENGINE
+# -----------------------------------------------------------------------------
+if weather_df is not None:
+    if st.button(f"⚡ Run AI Grid Dispatch Simulation for {selected_city}", type="primary", use_container_width=True):
+        
+        if sarimax_model is None or lstm_model is None:
+            st.error("❌ Cannot run simulation. Pre-trained models ('sarimax.pkl', 'lstm_model.keras') were not found. Please train them offline and place them in the application root directory.")
+            st.stop()
