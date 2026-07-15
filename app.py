@@ -4,10 +4,17 @@ import pandas as pd
 import numpy as np
 import sqlite3
 import requests
-from datetime import date, timedelta
-import plotly.graph_objects as go
 import os
 import tempfile
+import joblib
+from datetime import date, timedelta
+import plotly.graph_objects as go
+
+# Safely import Keras (Requires tensorflow in requirements.txt)
+try:
+    from tensorflow.keras.models import load_model
+except ImportError:
+    load_model = None
 
 # 1. PAGE CONFIGURATION
 st.set_page_config(
@@ -57,7 +64,34 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Cloud-writable scratchpad directory for SQLite (Bumped to v6 for schema update)
+# -----------------------------------------------------------------------------
+# MACHINE LEARNING MODEL LOADER (Runs Once at Startup)
+# -----------------------------------------------------------------------------
+@st.cache_resource
+def load_ai_models():
+    """Loads offline-trained SARIMAX and LSTM models into global memory cache."""
+    sarimax_m = None
+    lstm_m = None
+    
+    # Load SARIMAX
+    if os.path.exists("sarimax.pkl"):
+        try:
+            sarimax_m = joblib.load("sarimax.pkl")
+        except Exception as e:
+            st.sidebar.warning(f"Failed to load SARIMAX: {e}")
+            
+    # Load LSTM
+    if os.path.exists("lstm_model.keras") and load_model is not None:
+        try:
+            lstm_m = load_model("lstm_model.keras")
+        except Exception as e:
+            st.sidebar.warning(f"Failed to load LSTM: {e}")
+            
+    return sarimax_m, lstm_m
+
+sarimax_model, lstm_model = load_ai_models()
+
+# Cloud-writable scratchpad directory for SQLite
 DB_PATH = os.path.join(tempfile.gettempdir(), "solar_data_fleet_v6.db")
 
 # ENTERPRISE REGIONAL REGISTRY
@@ -123,178 +157,4 @@ def fetch_location_data_from_sql(location_name):
         conn = sqlite3.connect(DB_PATH)
         tomorrow_str = str(date.today() + timedelta(days=1))
         # Selecting the new wind_speed column for downstream processing
-        query = f"SELECT timestamp, temperature, humidity, cloud_cover, irradiance, wind_speed FROM real_time_weather WHERE location = '{location_name}' AND timestamp LIKE '{tomorrow_str}%' ORDER BY timestamp ASC"
-        df = pd.read_sql_query(query, conn)
-        conn.close()
-        
-        if df.empty: return None, "⚠️ Syncing telemetry..."
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
-        return df, f"✅ {location_name} Node Connected"
-    except Exception as e:
-        return None, f"Database Error: {str(e)}"
-
-# -----------------------------------------------------------------------------
-# APPLICATION INTERFACE LAYOUT
-# -----------------------------------------------------------------------------
-st.markdown('<p class="gradient-text">SolarNet Microgrid OS</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-text">Automated solar dispatch engine and BESS balancing dashboard.</p>', unsafe_allow_html=True)
-
-# SIDEBAR
-st.sidebar.markdown("### 🎛️ Command Center")
-selected_city = st.sidebar.selectbox("🎯 Target Grid Node", list(LOCATIONS.keys()))
-geo_data = LOCATIONS[selected_city]
-
-if st.session_state.current_active_city != selected_city:
-    st.session_state.simulation_results = None
-    st.session_state.current_active_city = selected_city
-
-with st.sidebar.expander("🔋 BESS Configuration", expanded=True):
-    battery_capacity = st.slider("Storage Capacity (kWh)", 200, 1000, 500, 50)
-    initial_charge_pct = st.slider("Initial Charge (SoC %)", 0, 100, 20, 5)
-
-with st.sidebar.expander("📈 Demand Modifications", expanded=False):
-    load_scaler = st.slider("Peak Load Modifier", 0.7, 1.5, 1.0, 0.05)
-    st.caption("Simulate heatwaves or high-demand events.")
-
-initialize_and_populate_db(selected_city, geo_data['lat'], geo_data['lon'])
-weather_df, db_status = fetch_location_data_from_sql(selected_city)
-st.sidebar.markdown("---")
-st.sidebar.success(db_status)
-
-# -----------------------------------------------------------------------------
-# SIMULATION TRIGGER & METRICS ENGINE
-# -----------------------------------------------------------------------------
-if weather_df is not None:
-    if st.button(f"⚡ Run Grid Dispatch Simulation for {selected_city}", type="primary", use_container_width=True):
-        with st.spinner("Processing neural generation and thermodynamic matrices..."):
-            
-            # 1. Generation Logic
-            factor = geo_data['factor']
-            base_gen = [max(0, 480 * np.sin(i/24 * np.pi)) * factor if 6 <= i <= 18 else 0 for i in range(24)]
-            sarimax_pred = [val * (1 + 0.10 * np.sin(i)) if val > 0 else 0 for i, val in enumerate(base_gen)]
-            lstm_corrections = [-20 * np.cos(i/3) if val > 0 else 0 for i, val in enumerate(base_gen)]
-            generation = [max(0, s + l) for s, l in zip(sarimax_pred, lstm_corrections)]
-
-            # 2. Simulated Actuals (Ground Truth) & Accuracy Calculation
-            actual_gen = [max(0, g + np.random.normal(0, g * 0.05)) for g in generation]
-            errors = [abs((act - pred) / act) for act, pred in zip(actual_gen, generation) if act > 10]
-            avg_mape = np.mean(errors) if errors else 0
-            accuracy_pct = max(0, 100 * (1 - avg_mape))
-
-            # 3. Demand Modeling
-            base_load = geo_data['base_demand'] * load_scaler
-            demand = []
-            for hour in range(24):
-                morning_peak = 0.4 * np.exp(-((hour - 9) / 2.5) ** 2)
-                evening_peak = 0.7 * np.exp(-((hour - 19) / 3.0) ** 2)
-                night_dip = 0.2 if (hour < 5 or hour > 22) else 0.35
-                hourly_demand = base_load * (night_dip + morning_peak + evening_peak + np.random.uniform(-0.02, 0.02))
-                demand.append(max(20, hourly_demand))
-
-            # 4. Battery Storage Simulation
-            current_charge = battery_capacity * (initial_charge_pct / 100.0)
-            battery_soc_history = []
-            unmet_deficit_history = []
-            
-            for gen, dem in zip(generation, demand):
-                raw_delta = gen - dem
-                if raw_delta > 0:
-                    available_room = battery_capacity - current_charge
-                    energy_to_store = min(raw_delta, available_room)
-                    current_charge += energy_to_store
-                    unmet_deficit = 0
-                else:
-                    needed_energy = abs(raw_delta)
-                    energy_dispatched = min(needed_energy, current_charge)
-                    current_charge -= energy_dispatched
-                    unmet_deficit = needed_energy - energy_dispatched
-                    
-                battery_soc_history.append(current_charge)
-                unmet_deficit_history.append(unmet_deficit)
-
-            total_gen = np.trapezoid(generation, dx=1.0)
-            total_dem = np.trapezoid(demand, dx=1.0)
-            total_grid_dependency = sum(unmet_deficit_history)
-            green_mitigation_pct = 100 * (1.0 - (total_grid_dependency / total_dem)) if total_dem > 0 else 100
-
-            st.session_state.simulation_results = {
-                "total_gen": total_gen,
-                "total_dem": total_dem,
-                "total_grid_dependency": total_grid_dependency,
-                "green_mitigation_pct": green_mitigation_pct,
-                "accuracy_pct": accuracy_pct,
-                "data_frame_records": {
-                    "Time": weather_df["timestamp"].dt.strftime('%H:%M'),
-                    "Generation": generation,
-                    "Actual (Simulated)": actual_gen,
-                    "Demand": demand,
-                    "Battery Storage (kWh)": battery_soc_history,
-                    "True Deficit (Fossil Backup)": unmet_deficit_history
-                }
-            }
-
-# -----------------------------------------------------------------------------
-# RENDERING LAYER
-# -----------------------------------------------------------------------------
-if st.session_state.simulation_results is not None:
-    res = st.session_state.simulation_results
-    results_df = pd.DataFrame(res["data_frame_records"])
-    
-    st.markdown("<br>", unsafe_allow_html=True)
-    
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("☀️ Total Generation", f"{res['total_gen']:,.1f} kWh")
-    col2.metric("🎯 Prediction Accuracy", f"{res['accuracy_pct']:.1f}%")
-    col3.metric("🚨 Grid Dependency", f"{res['total_grid_dependency']:,.1f} kWh")
-    col4.metric("🌿 Self-Sufficiency", f"{res['green_mitigation_pct']:.1f}%")
-    
-    st.markdown("<br><br>", unsafe_allow_html=True)
-
-    tab1, tab2 = st.tabs(["📊 Battery Dispatch Analytics", "📋 Detailed Data Ledger"])
-    
-    with tab1:
-        fig = go.Figure()
-        
-        fig.add_trace(go.Scatter(
-            x=results_df["Time"], y=results_df["Demand"],
-            mode='lines', line=dict(color='#FFA500', width=2.5),
-            name='Demand Profile (kW)'
-        ))
-        
-        fig.add_trace(go.Scatter(
-            x=results_df["Time"], y=results_df["Generation"],
-            mode='lines', line=dict(color='#00CC96', width=2.5),
-            name='Solar Production (kW)'
-        ))
-
-        fig.add_trace(go.Scatter(
-            x=results_df["Time"], y=results_df["Battery Storage (kWh)"],
-            fill='tozeroy', fillcolor='rgba(0, 191, 255, 0.1)',
-            mode='lines', line=dict(color='#00BFFF', width=3, shape='spline'),
-            name='Battery Reserve (kWh)'
-        ))
-        
-        fig.add_trace(go.Scatter(
-            x=results_df["Time"], y=results_df["True Deficit (Fossil Backup)"],
-            mode='lines', line=dict(color='#FF4B4B', width=2, dash='dash'),
-            name='External Grid (kW)'
-        ))
-        
-        fig.update_layout(
-            title=dict(text=f"BESS Balancing Matrix: {selected_city}", font=dict(size=18, color="#FAFAFA")),
-            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-            hovermode="x unified",
-            legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"),
-            xaxis=dict(showgrid=False, tickangle=-45),
-            yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', title="Power / Storage (kW)")
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        
-    with tab2:
-        st.dataframe(results_df, use_container_width=True)
-        st.caption("Note: Telemetry Matrix now correctly pulls `temperature_2m` and `wind_speed_10m` to align with NASA training profiles.")
-else:
-    if weather_df is not None:
-        st.info(f"Ready. Configure BESS parameters on the left and run the simulation.")
-    else:
-        st.info("System initializing telemetry...")
+        query = f"SELECT timestamp, temperature, humidity
