@@ -1,44 +1,45 @@
 # app.py
 import streamlit as st
-import pandas as pd
-import numpy as np
-import sqlite3
-import requests
-import os
-import tempfile
-import joblib
-from datetime import date, timedelta
-import plotly.graph_objects as go
-from statsmodels.tsa.statespace.sarimax import SARIMAXResults
 
-# Safely import Keras and apply the robust from_config override
-try:
-    from tensorflow.keras.models import load_model
-    from tensorflow.keras.layers import Dense
-    
-    # Override BOTH initialization and deserialization configs to strip the bug
-    class SafeDense(Dense):
-        def __init__(self, *args, **kwargs):
-            kwargs.pop('quantization_config', None)
-            super().__init__(*args, **kwargs)
-            
-        @classmethod
-        def from_config(cls, config):
-            # This intercepts the config dict BEFORE Keras tries to build the layer
-            config.pop('quantization_config', None)
-            return cls(**config)
-
-except ImportError:
-    load_model = None
-    SafeDense = None
-
-# 1. PAGE CONFIGURATION
+# 1. PAGE CONFIGURATION (Must be the absolute first Streamlit command to prevent crashes)
 st.set_page_config(
     page_title="SolarNet | Storage Engine",
     page_icon="🔋",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+import pandas as pd
+import numpy as np
+import sqlite3
+import requests
+import os
+import joblib
+from datetime import date, timedelta
+import plotly.graph_objects as go
+from statsmodels.tsa.statespace.sarimax import SARIMAXResults
+
+# -----------------------------------------------------------------------------
+# SAFE KERAS INITIALIZATION
+# -----------------------------------------------------------------------------
+try:
+    from tensorflow.keras.models import load_model
+    from tensorflow.keras.layers import Dense
+    
+    # Safely apply the Monkey-Patch to intercept Keras's native Dense layer
+    _original_dense_init = Dense.__init__
+
+    def _patched_dense_init(self, *args, **kwargs):
+        kwargs.pop('quantization_config', None)
+        _original_dense_init(self, *args, **kwargs)
+
+    # Overwrite the native Keras class method in memory
+    Dense.__init__ = _patched_dense_init
+
+except Exception as e:
+    # Catch ALL exceptions (not just ImportError) so a failure here doesn't crash the UI
+    load_model = None
+    st.sidebar.warning(f"TF Initialization Error: {str(e)}")
 
 # 2. CUSTOM CSS INJECTION
 st.markdown("""
@@ -106,18 +107,15 @@ def load_ai_models():
         except Exception as e:
             st.sidebar.warning(f"Failed to load legacy SARIMAX: {e}")
             
-    # Inject the robust SafeDense into Keras's deserializer
-    custom_objs = {'Dense': SafeDense} if SafeDense else {}
-            
-    # Load LSTM (Native Keras deserialization is now protected by custom_objects)
+    # Load LSTM 
     if os.path.exists("hybrid_lstm_light.h5") and load_model is not None:
         try:
-            lstm_m = load_model("hybrid_lstm_light.h5", compile=False, custom_objects=custom_objs)
+            lstm_m = load_model("hybrid_lstm_light.h5", compile=False)
         except Exception as e:
             st.sidebar.warning(f"Failed to load LSTM .h5: {e}")
     elif os.path.exists("hybrid_lstm_residuals.keras") and load_model is not None:
         try:
-            lstm_m = load_model("hybrid_lstm_residuals.keras", compile=False, custom_objects=custom_objs)
+            lstm_m = load_model("hybrid_lstm_residuals.keras", compile=False)
         except Exception as e:
             st.sidebar.warning(f"Failed to load LSTM .keras: {e}")
             
@@ -125,8 +123,8 @@ def load_ai_models():
 
 sarimax_model, lstm_model = load_ai_models()
 
-# Cloud-writable scratchpad directory for SQLite
-DB_PATH = os.path.join(tempfile.gettempdir(), "solar_data_fleet_v7.db")
+# Moved DB to local root directory to prevent tempfile permission errors on Streamlit Cloud
+DB_PATH = "solar_data_fleet_v7.db"
 
 # ENTERPRISE REGIONAL REGISTRY
 LOCATIONS = {
@@ -148,44 +146,47 @@ if "current_active_city" not in st.session_state:
 # DATABASE ORCHESTRATION
 # -----------------------------------------------------------------------------
 def initialize_and_populate_db(location_name, lat, lon):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS real_time_weather (
-            location TEXT, timestamp DATETIME, temperature REAL,
-            humidity REAL, cloud_cover REAL, irradiance REAL, wind_speed REAL,
-            PRIMARY KEY (location, timestamp)
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS real_time_weather (
+                location TEXT, timestamp DATETIME, temperature REAL,
+                humidity REAL, cloud_cover REAL, irradiance REAL, wind_speed REAL,
+                PRIMARY KEY (location, timestamp)
+            )
+        ''')
+        conn.commit()
+        
+        today_str = str(date.today())
+        tomorrow_str = str(date.today() + timedelta(days=1))
+        
+        cursor.execute(
+            "SELECT COUNT(*) FROM real_time_weather WHERE location = ? AND (timestamp LIKE ? OR timestamp LIKE ?)", 
+            (location_name, f"{today_str}%", f"{tomorrow_str}%")
         )
-    ''')
-    conn.commit()
-    
-    today_str = str(date.today())
-    tomorrow_str = str(date.today() + timedelta(days=1))
-    
-    cursor.execute(
-        "SELECT COUNT(*) FROM real_time_weather WHERE location = ? AND (timestamp LIKE ? OR timestamp LIKE ?)", 
-        (location_name, f"{today_str}%", f"{tomorrow_str}%")
-    )
-    if cursor.fetchone()[0] < 48:
-        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,relative_humidity_2m,cloud_cover,direct_radiation,wind_speed_10m&past_days=1&forecast_days=2"
-        try:
-            response = requests.get(url, timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                df = pd.DataFrame({
-                    "location": location_name,
-                    "timestamp": pd.to_datetime(data["hourly"]["time"]),
-                    "temperature": data["hourly"]["temperature_2m"],
-                    "humidity": data["hourly"]["relative_humidity_2m"],
-                    "cloud_cover": data["hourly"]["cloud_cover"],
-                    "irradiance": data["hourly"]["direct_radiation"],
-                    "wind_speed": data["hourly"]["wind_speed_10m"]
-                })
-                df.to_sql("real_time_weather", conn, if_exists="replace", index=False)
-                conn.commit()
-        except Exception:
-            pass
-    conn.close()
+        if cursor.fetchone()[0] < 48:
+            url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,relative_humidity_2m,cloud_cover,direct_radiation,wind_speed_10m&past_days=1&forecast_days=2"
+            try:
+                response = requests.get(url, timeout=5)
+                if response.status_code == 200:
+                    data = response.json()
+                    df = pd.DataFrame({
+                        "location": location_name,
+                        "timestamp": pd.to_datetime(data["hourly"]["time"]),
+                        "temperature": data["hourly"]["temperature_2m"],
+                        "humidity": data["hourly"]["relative_humidity_2m"],
+                        "cloud_cover": data["hourly"]["cloud_cover"],
+                        "irradiance": data["hourly"]["direct_radiation"],
+                        "wind_speed": data["hourly"]["wind_speed_10m"]
+                    })
+                    df.to_sql("real_time_weather", conn, if_exists="replace", index=False)
+                    conn.commit()
+            except Exception:
+                pass
+        conn.close()
+    except Exception as e:
+        st.sidebar.error(f"Database Init Error: {e}")
 
 def fetch_location_data_from_sql(location_name):
     try:
@@ -245,91 +246,93 @@ if weather_df is not None:
             st.stop()
             
         with st.spinner("Executing sequence-based autoregressive inference..."):
-            
-            sarimax_cols = ['temperature', 'humidity', 'cloud_cover', 'irradiance', 'wind_speed']
-            X_sarimax = np.nan_to_num(weather_df[sarimax_cols].values)
-            
             try:
-                sarimax_pred_48 = sarimax_model.predict(n_periods=len(X_sarimax), X=X_sarimax)
-            except:
-                sarimax_pred_48 = sarimax_model.forecast(steps=len(X_sarimax), exog=X_sarimax)
-            
-            lstm_cols = ['irradiance', 'temperature', 'wind_speed', 'humidity']
-            X_lstm_weather = np.nan_to_num(weather_df[lstm_cols].values)
-            
-            residuals_48 = np.zeros(48)
-            
-            for i in range(24):
-                sim_actual = max(0, sarimax_pred_48[i] + np.random.normal(0, 10))
-                residuals_48[i] = sim_actual - sarimax_pred_48[i]
+                sarimax_cols = ['temperature', 'humidity', 'cloud_cover', 'irradiance', 'wind_speed']
+                X_sarimax = np.nan_to_num(weather_df[sarimax_cols].values)
                 
-            lstm_corrections = []
-            for i in range(24, 48):
-                window_weather = X_lstm_weather[i-24:i, :]
-                window_res = residuals_48[i-24:i].reshape(-1, 1)
+                try:
+                    sarimax_pred_48 = sarimax_model.predict(n_periods=len(X_sarimax), X=X_sarimax)
+                except:
+                    sarimax_pred_48 = sarimax_model.forecast(steps=len(X_sarimax), exog=X_sarimax)
                 
-                window_X = np.hstack((window_weather, window_res))
-                X_input = window_X.reshape(1, 24, 5)
+                lstm_cols = ['irradiance', 'temperature', 'wind_speed', 'humidity']
+                X_lstm_weather = np.nan_to_num(weather_df[lstm_cols].values)
                 
-                pred_res = lstm_model.predict(X_input, verbose=0).flatten()[0]
-                residuals_48[i] = pred_res
-                lstm_corrections.append(pred_res)
-            
-            factor = geo_data['factor']
-            sarimax_tomorrow = sarimax_pred_48[24:]
-            generation = [max(0, (s + l) * factor) for s, l in zip(sarimax_tomorrow, lstm_corrections)]
-            
-            actual_gen = [max(0, g + np.random.normal(0, g * 0.05)) for g in generation]
-            errors = [abs((act - pred) / act) for act, pred in zip(actual_gen, generation) if act > 10]
-            accuracy_pct = max(0, 100 * (1 - (np.mean(errors) if errors else 0)))
-
-            base_load = geo_data['base_demand'] * load_scaler
-            demand = []
-            for hour in range(24):
-                morning_peak = 0.4 * np.exp(-((hour - 9) / 2.5) ** 2)
-                evening_peak = 0.7 * np.exp(-((hour - 19) / 3.0) ** 2)
-                night_dip = 0.2 if (hour < 5 or hour > 22) else 0.35
-                demand.append(max(20, base_load * (night_dip + morning_peak + evening_peak + np.random.uniform(-0.02, 0.02))))
-
-            current_charge = battery_capacity * (initial_charge_pct / 100.0)
-            battery_soc_history = []
-            unmet_deficit_history = []
-            
-            for gen, dem in zip(generation, demand):
-                raw_delta = gen - dem
-                if raw_delta > 0:
-                    current_charge += min(raw_delta, battery_capacity - current_charge)
-                    unmet_deficit = 0
-                else:
-                    needed = abs(raw_delta)
-                    dispatched = min(needed, current_charge)
-                    current_charge -= dispatched
-                    unmet_deficit = needed - dispatched
+                residuals_48 = np.zeros(48)
+                
+                for i in range(24):
+                    sim_actual = max(0, sarimax_pred_48[i] + np.random.normal(0, 10))
+                    residuals_48[i] = sim_actual - sarimax_pred_48[i]
                     
-                battery_soc_history.append(current_charge)
-                unmet_deficit_history.append(unmet_deficit)
+                lstm_corrections = []
+                for i in range(24, 48):
+                    window_weather = X_lstm_weather[i-24:i, :]
+                    window_res = residuals_48[i-24:i].reshape(-1, 1)
+                    
+                    window_X = np.hstack((window_weather, window_res))
+                    X_input = window_X.reshape(1, 24, 5)
+                    
+                    pred_res = lstm_model.predict(X_input, verbose=0).flatten()[0]
+                    residuals_48[i] = pred_res
+                    lstm_corrections.append(pred_res)
+                
+                factor = geo_data['factor']
+                sarimax_tomorrow = sarimax_pred_48[24:]
+                generation = [max(0, (s + l) * factor) for s, l in zip(sarimax_tomorrow, lstm_corrections)]
+                
+                actual_gen = [max(0, g + np.random.normal(0, g * 0.05)) for g in generation]
+                errors = [abs((act - pred) / act) for act, pred in zip(actual_gen, generation) if act > 10]
+                accuracy_pct = max(0, 100 * (1 - (np.mean(errors) if errors else 0)))
 
-            total_gen = np.trapezoid(generation, dx=1.0)
-            total_dem = np.trapezoid(demand, dx=1.0)
-            total_grid_dependency = sum(unmet_deficit_history)
-            green_mitigation_pct = 100 * (1.0 - (total_grid_dependency / total_dem)) if total_dem > 0 else 100
+                base_load = geo_data['base_demand'] * load_scaler
+                demand = []
+                for hour in range(24):
+                    morning_peak = 0.4 * np.exp(-((hour - 9) / 2.5) ** 2)
+                    evening_peak = 0.7 * np.exp(-((hour - 19) / 3.0) ** 2)
+                    night_dip = 0.2 if (hour < 5 or hour > 22) else 0.35
+                    demand.append(max(20, base_load * (night_dip + morning_peak + evening_peak + np.random.uniform(-0.02, 0.02))))
 
-            tomorrow_df = weather_df.iloc[24:].reset_index(drop=True)
-            st.session_state.simulation_results = {
-                "total_gen": total_gen,
-                "total_dem": total_dem,
-                "total_grid_dependency": total_grid_dependency,
-                "green_mitigation_pct": green_mitigation_pct,
-                "accuracy_pct": accuracy_pct,
-                "data_frame_records": {
-                    "Time": tomorrow_df["timestamp"].dt.strftime('%H:%M'),
-                    "Generation": generation,
-                    "Actual (Simulated)": actual_gen,
-                    "Demand": demand,
-                    "Battery Storage (kWh)": battery_soc_history,
-                    "True Deficit (Fossil Backup)": unmet_deficit_history
+                current_charge = battery_capacity * (initial_charge_pct / 100.0)
+                battery_soc_history = []
+                unmet_deficit_history = []
+                
+                for gen, dem in zip(generation, demand):
+                    raw_delta = gen - dem
+                    if raw_delta > 0:
+                        current_charge += min(raw_delta, battery_capacity - current_charge)
+                        unmet_deficit = 0
+                    else:
+                        needed = abs(raw_delta)
+                        dispatched = min(needed, current_charge)
+                        current_charge -= dispatched
+                        unmet_deficit = needed - dispatched
+                        
+                    battery_soc_history.append(current_charge)
+                    unmet_deficit_history.append(unmet_deficit)
+
+                total_gen = np.trapezoid(generation, dx=1.0)
+                total_dem = np.trapezoid(demand, dx=1.0)
+                total_grid_dependency = sum(unmet_deficit_history)
+                green_mitigation_pct = 100 * (1.0 - (total_grid_dependency / total_dem)) if total_dem > 0 else 100
+
+                tomorrow_df = weather_df.iloc[24:].reset_index(drop=True)
+                st.session_state.simulation_results = {
+                    "total_gen": total_gen,
+                    "total_dem": total_dem,
+                    "total_grid_dependency": total_grid_dependency,
+                    "green_mitigation_pct": green_mitigation_pct,
+                    "accuracy_pct": accuracy_pct,
+                    "data_frame_records": {
+                        "Time": tomorrow_df["timestamp"].dt.strftime('%H:%M'),
+                        "Generation": generation,
+                        "Actual (Simulated)": actual_gen,
+                        "Demand": demand,
+                        "Battery Storage (kWh)": battery_soc_history,
+                        "True Deficit (Fossil Backup)": unmet_deficit_history
+                    }
                 }
-            }
+            except Exception as e:
+                st.error(f"Simulation Engine Error: {str(e)}")
 
 # -----------------------------------------------------------------------------
 # RENDERING LAYER
