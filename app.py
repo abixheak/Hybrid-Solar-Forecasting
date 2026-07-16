@@ -310,8 +310,8 @@ if weather_df is not None:
                     battery_soc_history.append(current_charge)
                     unmet_deficit_history.append(unmet_deficit)
 
-                total_gen = np.trapezoid(generation, dx=1.0)
-                total_dem = np.trapezoid(demand, dx=1.0)
+                total_gen = np.trapz(generation, dx=1.0)
+                total_dem = np.trapz(demand, dx=1.0)
                 total_grid_dependency = sum(unmet_deficit_history)
                 green_mitigation_pct = 100 * (1.0 - (total_grid_dependency / total_dem)) if total_dem > 0 else 100
 
