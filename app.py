@@ -334,4 +334,4 @@ if weather_df is not None:
 # -----------------------------------------------------------------------------
 # RENDERING LAYER
 # -----------------------------------------------------------------------------
-if st.session_state.simulation_
+if st.session_state.simulation
