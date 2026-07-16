@@ -334,4 +334,33 @@ if weather_df is not None:
 # -----------------------------------------------------------------------------
 # RENDERING LAYER
 # -----------------------------------------------------------------------------
-if st.session_state.simulation
+if st.session_state.simulation_results is not None:
+    res = st.session_state.simulation_results
+    results_df = pd.DataFrame(res["data_frame_records"])
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("☀️ Total Generation", f"{res['total_gen']:,.1f} kWh")
+    col2.metric("🎯 Prediction Accuracy", f"{res['accuracy_pct']:.1f}%")
+    col3.metric("🚨 Grid Dependency", f"{res['total_grid_dependency']:,.1f} kWh")
+    col4.metric("🌿 Self-Sufficiency", f"{res['green_mitigation_pct']:.1f}%")
+    st.markdown("<br><br>", unsafe_allow_html=True)
+
+    tab1, tab2 = st.tabs(["📊 Battery Dispatch Analytics", "📋 Detailed Data Ledger"])
+    with tab1:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=results_df["Time"], y=results_df["Demand"], mode='lines', line=dict(color='#FFA500', width=2.5), name='Demand Profile (kW)'))
+        fig.add_trace(go.Scatter(x=results_df["Time"], y=results_df["Generation"], mode='lines', line=dict(color='#00CC96', width=2.5), name='Solar Production (kW)'))
+        fig.add_trace(go.Scatter(x=results_df["Time"], y=results_df["Battery Storage (kWh)"], fill='tozeroy', fillcolor='rgba(0, 191, 255, 0.1)', mode='lines', line=dict(color='#00BFFF', width=3, shape='spline'), name='Battery Reserve (kWh)'))
+        fig.add_trace(go.Scatter(x=results_df["Time"], y=results_df["True Deficit (Fossil Backup)"], mode='lines', line=dict(color='#FF4B4B', width=2, dash='dash'), name='External Grid (kW)'))
+        fig.update_layout(title=dict(text=f"BESS Balancing Matrix: {selected_city}", font=dict(size=18, color="#FAFAFA")), plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"), xaxis=dict(showgrid=False, tickangle=-45), yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', title="Power / Storage (kW)"))
+        st.plotly_chart(fig, use_container_width=True)
+        
+    with tab2:
+        st.dataframe(results_df, use_container_width=True)
+        st.caption("Note: Inference maps to 24-hour sliding sequence matching `hybrid_lstm_residuals.keras` dimensions (samples=1, timesteps=24, features=5).")
+else:
+    if weather_df is not None:
+        st.info(f"Ready. Configure BESS parameters on the left and run the simulation.")
+    else:
+        st.info("System initializing telemetry...")
