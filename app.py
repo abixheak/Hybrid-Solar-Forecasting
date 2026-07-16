@@ -1,7 +1,7 @@
 # app.py
 import streamlit as st
 
-# 1. PAGE CONFIGURATION (Must be the absolute first Streamlit command to prevent crashes)
+# 1. PAGE CONFIGURATION (Must be the absolute first Streamlit command)
 st.set_page_config(
     page_title="SolarNet | Storage Engine",
     page_icon="🔋",
@@ -37,7 +37,7 @@ try:
     Dense.__init__ = _patched_dense_init
 
 except Exception as e:
-    # Catch ALL exceptions (not just ImportError) so a failure here doesn't crash the UI
+    # Catch ALL exceptions so a failure here doesn't crash the UI
     load_model = None
     st.sidebar.warning(f"TF Initialization Error: {str(e)}")
 
@@ -123,7 +123,7 @@ def load_ai_models():
 
 sarimax_model, lstm_model = load_ai_models()
 
-# Moved DB to local root directory to prevent tempfile permission errors on Streamlit Cloud
+# Moved DB to local root directory to prevent cloud permission errors
 DB_PATH = "solar_data_fleet_v7.db"
 
 # ENTERPRISE REGIONAL REGISTRY
